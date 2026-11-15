@@ -1,48 +1,75 @@
 import os
-import shutil
+import base64
 import struct
 import sys
 
 MAX_BYTES = 1048576
-MAX_DIMENSION = 8192
-PNG_SIGNATURE = b"\x89PNG"
+MAX_DIMENSION = 1024
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def fail(message):
+    print("error: " + message, file=sys.stderr)
+    return 1
 
 
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
-    source = os.path.join(here, "entry.png")
+    source_path = os.path.join(here, "img_b64.txt")
+    entry_path = os.path.join(here, "entry.png")
     output_dir = os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")
-    destination = os.path.join(output_dir, "entry.png")
+    output_path = os.path.join(output_dir, "entry.png")
 
-    with open(source, "rb") as fh:
-        data = fh.read()
+    try:
+        with open(source_path, "r", encoding="ascii") as fh:
+            encoded = "".join(fh.read().split())
+    except OSError as exc:
+        return fail("cannot read {}: {}".format(source_path, exc))
+
+    try:
+        data = base64.b64decode(encoded, validate=True)
+    except ValueError as exc:
+        return fail("cannot decode {}: {}".format(source_path, exc))
+
+    print("decoded {} bytes from {}".format(len(data), source_path))
 
     if not data.startswith(PNG_SIGNATURE):
-        print("error: entry.png does not start with PNG signature", file=sys.stderr)
-        return 1
-
-    if len(data) > MAX_BYTES:
-        print("error: entry.png exceeds 1 MiB", file=sys.stderr)
-        return 1
+        return fail("decoded bytes do not start with the PNG signature")
 
     if len(data) < 24 or data[12:16] != b"IHDR":
-        print("error: entry.png has no valid IHDR chunk", file=sys.stderr)
-        return 1
+        return fail("decoded bytes have no valid IHDR chunk")
+
+    if len(data) > MAX_BYTES:
+        return fail(
+            "image is {} bytes, exceeding the {} byte limit".format(
+                len(data), MAX_BYTES
+            )
+        )
 
     width, height = struct.unpack(">II", data[16:24])
-    if width == 0 or height == 0 or width > MAX_DIMENSION or height > MAX_DIMENSION:
-        print(
-            "error: invalid image dimensions {}x{}".format(width, height),
-            file=sys.stderr,
-        )
-        return 1
 
-    os.makedirs(output_dir, exist_ok=True)
-    shutil.copyfile(source, destination)
+    if width == 0 or height == 0:
+        return fail("image has invalid zero dimension {}x{}".format(width, height))
+
+    if width > MAX_DIMENSION or height > MAX_DIMENSION:
+        return fail(
+            "image is {}x{}, exceeding the {}x{} limit".format(
+                width, height, MAX_DIMENSION, MAX_DIMENSION
+            )
+        )
+
+    try:
+        with open(entry_path, "wb") as fh:
+            fh.write(data)
+        os.makedirs(output_dir, exist_ok=True)
+        with open(output_path, "wb") as fh:
+            fh.write(data)
+    except OSError as exc:
+        return fail("cannot write output: {}".format(exc))
 
     print(
-        "entry.png: {} bytes, {}x{} -> {}".format(
-            len(data), width, height, destination
+        "entry.png: {} bytes, {}x{}, output {}".format(
+            len(data), width, height, output_path
         )
     )
     return 0

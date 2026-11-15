@@ -8,9 +8,11 @@ lunar light.
 
 ## Running
 
-`main.py` reads `entry.png` from its own directory, verifies the PNG
-signature and IHDR dimensions, checks the file is at most 1 MiB, and copies
-the exact bytes to the output directory.
+`main.py` uses only the Python 3 standard library. It locates its own
+directory, reads `entry.png`, verifies the PNG signature (`\x89PNG`), checks
+that the file is at most 1 MiB, and rejects oversized dimensions from the
+IHDR chunk. It then creates the output directory and writes the exact same
+bytes to `entry.png` there.
 
 ```sh
 MAKEFUN_OUTPUT_DIR=out python3 main.py
