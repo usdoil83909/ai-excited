@@ -1,21 +1,17 @@
 # Sky-Whale City
 
-`entry.png` is a 1024x1024 illustration of a sky-whale city: a colossal
-whale-shaped metropolis with towers, bridges, and glowing windows rising
-from its back, caught mid-leap through a sea of clouds toward a shattered
-moon. Shards of the broken moon hang in the sky around it, lit by pale
-lunar light.
+An image entry depicting a sky-whale city leaping toward a shattered moon.
 
-## Running
+## Contents
 
-`main.py` uses only the Python 3 standard library. It locates its own
-directory, reads `entry.png`, verifies the PNG signature (`\x89PNG`), checks
-that the file is at most 1 MiB, and rejects oversized dimensions from the
-IHDR chunk. It then creates the output directory and writes the exact same
-bytes to `entry.png` there.
+- `img_b64.txt` — embedded base64-encoded PNG data (single line)
+- `main.py` — regenerates `entry.png` from the embedded base64 data (pure stdlib)
+- `entry.png` — generated PNG image
+
+## Usage
 
 ```sh
-MAKEFUN_OUTPUT_DIR=out python3 main.py
+python3 main.py
 ```
 
-The output directory defaults to `/output`.
+`main.py` reads `img_b64.txt`, base64-decodes and verifies the PNG signature, writes `entry.png` in the repository, and writes the same bytes to the output directory (`MAKEFUN_OUTPUT_DIR`, default `/output`). It validates the image is <= 1,048,576 bytes and <= 1024x1024 (from the IHDR chunk) and prints a summary.
