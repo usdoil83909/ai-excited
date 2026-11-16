@@ -1,17 +1,21 @@
-# Sky-Whale City
+# Night Sky Whale
 
-An image entry depicting a sky-whale city leaping toward a shattered moon.
+Procedurally generated 1024×1024 PNG: a whale leaps from a dark ocean toward a shattered moon, city lights glowing along its back. Built with pure-stdlib zlib PNG writer — no external dependencies.
 
-## Contents
+## Deterministic
 
-- `img_b64.txt` — embedded base64-encoded PNG data (single line)
-- `main.py` — regenerates `entry.png` from the embedded base64 data (pure stdlib)
-- `entry.png` — generated PNG image
+Same bytes every run. No input data, no randomness, no external assets.
 
 ## Usage
 
-```sh
+```bash
 python3 main.py
 ```
 
-`main.py` reads `img_b64.txt`, base64-decodes and verifies the PNG signature, writes `entry.png` in the repository, and writes the same bytes to the output directory (`MAKEFUN_OUTPUT_DIR`, default `/output`). It validates the image is <= 1,048,576 bytes and <= 1024x1024 (from the IHDR chunk) and prints a summary.
+Regenerates `entry.png` in the working directory and `$MAKEFUN_OUTPUT_DIR/entry.png`.
+
+## Output
+
+- `entry.png` — 1024×1024 RGB PNG (~300–500 KB)
+- Verified: dimensions ≤ 1024×1024, file size ≤ 1 MB
+- Prints `GEN-DONE` on success
