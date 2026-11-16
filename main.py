@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import math
 import struct
 import zlib
@@ -8,262 +7,280 @@ import sys
 WIDTH = 1024
 HEIGHT = 1024
 
-def write_png(path, pixels):
-    png_sig = b'\x89PNG\r\n\x1a\n'
+def hash2d(x, y):
+    n = int((x * 12.9898 + y * 78.233) * 43758.5453)
+    n = (n ^ (n >> 13)) * 0x5bd1e995
+    n = (n ^ (n >> 15)) * 0x5bd1e995
+    n = n ^ (n >> 13)
+    return (n & 0x7fffffff) / 0x7fffffff
+
+def hash3d(x, y, z):
+    n = int((x * 12.9898 + y * 78.233 + z * 37.719) * 43758.5453)
+    n = (n ^ (n >> 13)) * 0x5bd1e995
+    n = (n ^ (n >> 15)) * 0x5bd1e995
+    n = n ^ (n >> 13)
+    return (n & 0x7fffffff) / 0x7fffffff
+
+def lerp(a, b, t):
+    return a + (b - a) * t
+
+def smoothstep(edge0, edge1, x):
+    t = max(0.0, min(1.0, (x - edge0) / (edge1 - edge0)))
+    return t * t * (3.0 - 2.0 * t)
+
+def gaussian(x, sigma):
+    return math.exp(-0.5 * (x / sigma) ** 2)
+
+def dist_point_to_segment(px, py, x1, y1, x2, y2):
+    dx = x2 - x1
+    dy = y2 - y1
+    if dx == 0 and dy == 0:
+        return math.hypot(px - x1, py - y1)
+    t = max(0.0, min(1.0, ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)))
+    proj_x = x1 + t * dx
+    proj_y = y1 + t * dy
+    return math.hypot(px - proj_x, py - proj_y)
+
+def whale_body_df(x, y):
+    cx, cy = 512, 600
+    dx = x - cx
+    dy = y - cy
+    rx = dx * 0.0025
+    ry = dy * 0.0035
+    body = math.sqrt(rx * rx + ry * ry) - 1.0
+    tail_x = dx + 180
+    tail_y = dy + 60
+    rtx = tail_x * 0.004
+    rty = tail_y * 0.006
+    tail = math.sqrt(rtx * rtx + rty * rty) - 1.0
+    flipper1_x = dx + 80
+    flipper1_y = dy - 40
+    f1x = flipper1_x * 0.006
+    f1y = flipper1_y * 0.004
+    flipper1 = math.sqrt(f1x * f1x + f1y * f1y) - 1.0
+    flipper2_x = dx - 80
+    flipper2_y = dy - 30
+    f2x = flipper2_x * 0.006
+    f2y = flipper2_y * 0.004
+    flipper2 = math.sqrt(f2x * f2x + f2y * f2y) - 1.0
+    return min(body, tail, flipper1, flipper2)
+
+def moon_df(x, y):
+    mx, my = 800, 200
+    return math.hypot(x - mx, y - my) - 280
+
+def crack_df(x, y, cx, cy, angle, length, width):
+    dx = x - cx
+    dy = y - cy
+    rot_x = dx * math.cos(angle) + dy * math.sin(angle)
+    rot_y = -dx * math.sin(angle) + dy * math.cos(angle)
+    if abs(rot_x) > length / 2:
+        return math.hypot(abs(rot_x) - length / 2, rot_y) - width / 2
+    return abs(rot_y) - width / 2
+
+def generate_image():
+    pixels = bytearray(WIDTH * HEIGHT * 3)
     
-    ihdr_data = struct.pack('>IIBBBBB', WIDTH, HEIGHT, 8, 2, 0, 0, 0)
-    ihdr_crc = zlib.crc32(b'IHDR' + ihdr_data) & 0xffffffff
-    ihdr_chunk = struct.pack('>I', len(ihdr_data)) + b'IHDR' + ihdr_data + struct.pack('>I', ihdr_crc)
+    for y in range(HEIGHT):
+        for x in range(WIDTH):
+            ux = x / WIDTH
+            uy = y / HEIGHT
+            
+            sky_t = uy
+            r = int(lerp(10, 25, sky_t))
+            g = int(lerp(5, 15, sky_t))
+            b = int(lerp(20, 50, sky_t))
+            
+            star_hash = hash2d(x * 0.1, y * 0.1)
+            if star_hash < 0.0003:
+                brightness = star_hash * 3000 + 100
+                r = min(255, r + int(brightness))
+                g = min(255, g + int(brightness * 0.9))
+                b = min(255, b + int(brightness * 0.7))
+            elif star_hash < 0.00035:
+                brightness = (star_hash - 0.0003) * 20000 + 50
+                r = min(255, r + int(brightness))
+                g = min(255, g + int(brightness * 0.95))
+                b = min(255, b + int(brightness * 0.8))
+            
+            moon_d = moon_df(x, y)
+            if moon_d < 0:
+                glow = gaussian(moon_d + 280, 60) * 0.6
+                if moon_d < 10:
+                    mr = int(lerp(220, 180, -moon_d / 10))
+                    mg = int(lerp(210, 170, -moon_d / 10))
+                    mb = int(lerp(180, 140, -moon_d / 10))
+                else:
+                    mr = int(200 + glow * 55)
+                    mg = int(190 + glow * 65)
+                    mb = int(160 + glow * 95)
+                r = int(r * (1 - glow) + mr * glow)
+                g = int(g * (1 - glow) + mg * glow)
+                b = int(b * (1 - glow) + mb * glow)
+                
+                crack1 = crack_df(x, y, 800, 200, 0.5, 200, 3)
+                crack2 = crack_df(x, y, 750, 250, -0.3, 150, 2.5)
+                crack3 = crack_df(x, y, 850, 180, 1.2, 180, 2)
+                crack4 = crack_df(x, y, 780, 150, -1.0, 120, 2)
+                min_crack = min(crack1, crack2, crack3, crack4)
+                if min_crack < 0:
+                    crack_amt = gaussian(min_crack, 2)
+                    r = int(r * (1 - crack_amt * 0.8))
+                    g = int(g * (1 - crack_amt * 0.8))
+                    b = int(b * (1 - crack_amt * 0.8))
+                
+                for i in range(8):
+                    shard_hash = hash3d(x * 0.02 + i * 100, y * 0.02 + i * 50, i)
+                    sx = 800 + (shard_hash - 0.5) * 600
+                    sy = 200 + (hash3d(x * 0.02 + i * 100 + 1, y * 0.02 + i * 50 + 1, i) - 0.5) * 400
+                    sd = math.hypot(x - sx, y - sy)
+                    if sd < 8:
+                        sg = gaussian(sd, 3) * 0.4
+                        r = min(255, int(r + 100 * sg))
+                        g = min(255, int(g + 90 * sg))
+                        b = min(255, int(b + 70 * sg))
+            
+            if y > HEIGHT - 220:
+                ocean_t = (y - (HEIGHT - 220)) / 220
+                r = int(lerp(r, 5, ocean_t))
+                g = int(lerp(g, 8, ocean_t))
+                b = int(lerp(b, 20, ocean_t))
+                
+                shimmer = math.sin(x * 0.05 + y * 0.02) * 0.5 + math.sin(x * 0.1) * 0.3
+                shimmer_val = int(max(0, shimmer * 15 * (1 - ocean_t)))
+                r = min(255, r + shimmer_val)
+                g = min(255, g + shimmer_val)
+                b = min(255, b + shimmer_val * 2)
+                
+                refl_x = 800
+                refl_dist = abs(x - refl_x)
+                if refl_dist < 80:
+                    refl_str = gaussian(refl_dist, 25) * (1 - ocean_t) * 0.5
+                    r = min(255, int(r + 100 * refl_str))
+                    g = min(255, int(g + 90 * refl_str))
+                    b = min(255, int(b + 60 * refl_str))
+            
+            whale_d = whale_body_df(x, y)
+            if whale_d < 0:
+                whale_d_abs = -whale_d
+                if whale_d_abs < 8:
+                    rim = gaussian(whale_d_abs, 4) * 0.9
+                    r = min(255, int(r + 80 * rim))
+                    g = min(255, int(g + 180 * rim))
+                    b = min(255, int(b + 220 * rim))
+                else:
+                    r = int(r * 0.05)
+                    g = int(g * 0.05)
+                    b = int(b * 0.1)
+                
+                back_y = 600 + (x - 512) * 0.3
+                back_dist = abs(y - back_y)
+                if back_dist < 35 and x > 400 and x < 620:
+                    segment = int((x - 400) / 12)
+                    window_hash = hash2d(segment * 100, back_y * 0.5)
+                    if window_hash < 0.15:
+                        wx = 400 + (segment % 18) * 12
+                        wy = back_y + (segment // 18) * 8
+                        wd = math.hypot(x - wx, y - wy)
+                        if wd < 4:
+                            wg = gaussian(wd, 1.5)
+                            r = min(255, int(r + 255 * wg))
+                            g = min(255, int(g + 200 * wg))
+                            b = min(255, int(b + 50 * wg))
+            
+            if y > HEIGHT - 220 and whale_body_df(x, y) < 50 and whale_body_df(x, y) > -20:
+                splash_d = whale_body_df(x, y)
+                if splash_d > 0 and splash_d < 30:
+                    splash_amt = gaussian(splash_d - 10, 8) * 0.7
+                    r = min(255, int(r + 200 * splash_amt))
+                    g = min(255, int(g + 210 * splash_amt))
+                    b = min(255, int(b + 230 * splash_amt))
+            
+            idx = (y * WIDTH + x) * 3
+            pixels[idx] = max(0, min(255, r))
+            pixels[idx + 1] = max(0, min(255, g))
+            pixels[idx + 2] = max(0, min(255, b))
     
+    return pixels
+
+def write_png(pixels, filename):
     scanlines = bytearray()
     for y in range(HEIGHT):
         scanlines.append(0)
-        row = pixels[y]
-        for x in range(WIDTH):
-            r, g, b = row[x]
-            scanlines.append(r)
-            scanlines.append(g)
-            scanlines.append(b)
+        start = y * WIDTH * 3
+        end = start + WIDTH * 3
+        scanlines.extend(pixels[start:end])
     
-    compressed = zlib.compress(scanlines, level=6)
-    idat_crc = zlib.crc32(b'IDAT' + compressed) & 0xffffffff
-    idat_chunk = struct.pack('>I', len(compressed)) + b'IDAT' + compressed + struct.pack('>I', idat_crc)
+    compressed = zlib.compress(scanlines, 1)
     
-    iend_crc = zlib.crc32(b'IEND') & 0xffffffff
-    iend_chunk = struct.pack('>I', 0) + b'IEND' + struct.pack('>I', iend_crc)
+    def make_chunk(chunk_type, data):
+        crc = zlib.crc32(chunk_type + data) & 0xffffffff
+        return struct.pack('>I', len(data)) + chunk_type + data + struct.pack('>I', crc)
     
-    with open(path, 'wb') as f:
-        f.write(png_sig)
-        f.write(ihdr_chunk)
-        f.write(idat_chunk)
-        f.write(iend_chunk)
+    png = bytearray()
+    png.extend(b'\x89PNG\r\n\x1a\n')
+    
+    ihdr_data = struct.pack('>IIBBBBB', WIDTH, HEIGHT, 8, 2, 0, 0, 0)
+    png.extend(make_chunk(b'IHDR', ihdr_data))
+    
+    png.extend(make_chunk(b'IDAT', compressed))
+    
+    png.extend(make_chunk(b'IEND', b''))
+    
+    with open(filename, 'wb') as f:
+        f.write(png)
+    
+    return len(png)
+
+def validate_png(filename):
+    with open(filename, 'rb') as f:
+        data = f.read()
+    
+    if len(data) < 29:
+        return False, "File too small"
+    
+    if data[:8] != b'\x89PNG\r\n\x1a\n':
+        return False, "Invalid PNG signature"
+    
+    ihdr_len = struct.unpack('>I', data[8:12])[0]
+    if data[12:16] != b'IHDR' or ihdr_len != 13:
+        return False, "Invalid IHDR chunk"
+    
+    width, height = struct.unpack('>II', data[16:24])
+    bit_depth = data[24]
+    color_type = data[25]
+    
+    if width != 1024 or height != 1024:
+        return False, f"Invalid dimensions: {width}x{height}"
+    if bit_depth != 8:
+        return False, f"Invalid bit depth: {bit_depth}"
+    if color_type != 2:
+        return False, f"Invalid color type: {color_type}"
+    
+    if len(data) > 1048576:
+        return False, f"File too large: {len(data)} bytes"
+    
+    return True, f"Valid PNG: {width}x{height}, {len(data)} bytes"
 
 def main():
-    pixels = [[(0, 0, 0) for _ in range(WIDTH)] for _ in range(HEIGHT)]
+    print("Generating image...")
+    pixels = generate_image()
     
-    stars = []
-    for i in range(300):
-        sx = math.sin(i * 1.0 + i * 2.0) * 43758.5453
-        sx = (sx - int(sx)) % 1.0
-        sy = math.sin(i * 3.0 + i * 5.0) * 43758.5453
-        sy = (sy - int(sy)) % 1.0
-        b = math.sin(i * 7.0 + i * 11.0) * 43758.5453
-        b = ((b - int(b)) % 1.0) * 0.8 + 0.2
-        stars.append((sx, sy, b))
-    
-    big_stars = []
-    for i in range(15):
-        sx = math.sin(i * 13.0 + i * 17.0) * 43758.5453
-        sx = (sx - int(sx)) % 1.0
-        sy = math.sin(i * 19.0 + i * 23.0) * 43758.5453
-        sy = (sy - int(sy)) % 1.0
-        sz = math.sin(i * 29.0 + i * 31.0) * 43758.5453
-        sz = ((sz - int(sz)) % 1.0) * 2.0 + 0.5
-        big_stars.append((sx, sy, sz))
-    
-    moon_cracks = []
-    for ci in range(5):
-        angle = ci * 2.5 + ((math.sin(ci * 100.0 + ci * 200.0) * 43758.5453) % 1.0) * 0.5
-        cx = 0.78 + math.cos(angle) * 0.18 * 0.3
-        cy = 0.22 + math.sin(angle) * 0.18 * 0.3
-        moon_cracks.append((cx, cy))
-    
-    moon_shards = []
-    for di in range(20):
-        angle = ((math.sin(di * 37.0 + di * 41.0) * 43758.5453) % 1.0) * 6.28
-        dist_f = 0.18 + ((math.sin(di * 43.0 + di * 47.0) * 43758.5453) % 1.0) * 0.15 + 0.02
-        sx = 0.78 + math.cos(angle) * dist_f
-        sy = 0.22 + math.sin(angle) * dist_f
-        moon_shards.append((sx, sy))
-    
-    whale_windows = []
-    for wi in range(40):
-        back_x = 0.45 + (wi - 15) * 0.008 + ((math.sin(wi * 11.0 + wi * 13.0) * 43758.5453) % 1.0) * 0.003
-        back_y = 0.65 - 0.12 * 0.3 + (wi - 15) * (wi - 15) * 0.0002 + ((math.sin(wi * 17.0 + wi * 19.0) * 43758.5453) % 1.0) * 0.002
-        whale_windows.append((back_x, back_y))
-    
-    splash_particles = []
-    for si in range(60):
-        angle = ((math.sin(si * 23.0 + si * 29.0) * 43758.5453) % 1.0) * 6.28
-        dist_f = ((math.sin(si * 31.0 + si * 37.0) * 43758.5453) % 1.0) * 0.08 + 0.01
-        sx = 0.45 + math.cos(angle) * dist_f
-        sy = 0.81 + math.sin(angle) * dist_f * 0.5
-        splash_particles.append((sx, sy))
-    
-    shimmer_lines = []
-    for si in range(8):
-        sy = 0.8 + si * 0.015 + ((math.sin(si * 100.0 + si * 200.0) * 43758.5453) % 1.0) * 0.005
-        shimmer_lines.append(sy)
-    
-    for y in range(HEIGHT):
-        ny = y / HEIGHT
-        row = pixels[y]
-        for x in range(WIDTH):
-            nx = x / WIDTH
-            
-            sky_t = ny
-            col_r = 0.04 + 0.04 * sky_t
-            col_g = 0.05 + 0.05 * sky_t
-            col_b = 0.16 + 0.04 * sky_t
-            
-            for sx, sy, b in stars:
-                dx = nx - sx
-                dy = ny - sy
-                dist = math.sqrt(dx * dx + dy * dy)
-                if dist * 1200.0 < 1.5:
-                    glow = math.exp(-(dist * 1200.0) ** 2 / 0.5) * b * 0.6
-                    col_r = min(1.0, col_r + glow)
-                    col_g = min(1.0, col_g + glow)
-                    col_b = min(1.0, col_b + glow)
-            
-            for sx, sy, sz in big_stars:
-                dx = nx - sx
-                dy = ny - sy
-                dist = math.sqrt(dx * dx + dy * dy)
-                if dist * 800.0 < 3.0:
-                    glow = math.exp(-(dist * 800.0) ** 2 / 2.0) * sz * 0.8
-                    col_r = min(1.0, col_r + glow)
-                    col_g = min(1.0, col_g + glow * 0.95)
-                    col_b = min(1.0, col_b + glow * 0.9)
-            
-            dx = nx - 0.78
-            dy = ny - 0.22
-            moon_dist = math.sqrt(dx * dx + dy * dy)
-            
-            moon_glow = math.exp(-moon_dist ** 2 / (2 * (0.18 * 1.5) ** 2)) * 0.4
-            col_r = min(1.0, col_r + moon_glow * 0.95)
-            col_g = min(1.0, col_g + moon_glow * 0.9)
-            col_b = min(1.0, col_b + moon_glow * 0.8)
-            
-            if moon_dist < 0.18:
-                t = moon_dist / 0.18
-                moon_val = 1.0 - (t * t * (3.0 - 2.0 * t)) if t > 0.85 else 1.0
-                if t > 0.85:
-                    moon_val = 1.0 - smoothstep(0.85, 1.0, t)
-                col_r = col_r * (1 - moon_val) + 0.9 * moon_val
-                col_g = col_g * (1 - moon_val) + 0.85 * moon_val
-                col_b = col_b * (1 - moon_val) + 0.75 * moon_val
-                
-                for cx, cy in moon_cracks:
-                    cdx = nx - cx
-                    cdy = ny - cy
-                    cd = math.sqrt(cdx * cdx + cdy * cdy)
-                    if cd < 0.18 * 0.35:
-                        crack = math.sin(cdx * 120.0 + cdy * 80.0)
-                        if crack < -0.3:
-                            col_r *= 0.15
-                            col_g *= 0.15
-                            col_b *= 0.15
-            
-            for sx, sy in moon_shards:
-                sdx = nx - sx
-                sdy = ny - sy
-                sd = math.sqrt(sdx * sdx + sdy * sdy)
-                if sd < 0.008:
-                    shard_val = math.exp(-sd ** 2 / (2 * 0.006 ** 2)) * 0.7
-                    col_r = min(1.0, col_r + shard_val * 0.8)
-                    col_g = min(1.0, col_g + shard_val * 0.75)
-                    col_b = min(1.0, col_b + shard_val * 0.7)
-            
-            if ny > 0.8:
-                ocean_t = (ny - 0.8) / 0.2
-                col_r = 0.01 * (1 - ocean_t) + 0.005 * ocean_t
-                col_g = 0.02 * (1 - ocean_t) + 0.01 * ocean_t
-                col_b = 0.06 * (1 - ocean_t) + 0.03 * ocean_t
-                
-                for sy in shimmer_lines:
-                    if ny > sy and ny < sy + 0.003:
-                        col_r += 0.03
-                        col_g += 0.02
-                        col_b += 0.015
-                
-                rdx = nx - 0.78
-                rdy = ny - (1.0 - 0.22 + 0.02)
-                rdist = math.sqrt(rdx * rdx + rdy * rdy)
-                if rdist < 0.12:
-                    reflect = math.exp(-rdist ** 2 / (2 * 0.06 ** 2)) * 0.15
-                    col_r = min(1.0, col_r + reflect * 0.7)
-                    col_g = min(1.0, col_g + reflect * 0.6)
-                    col_b = min(1.0, col_b + reflect * 0.5)
-            
-            dx = (nx - 0.45) / 0.22
-            dy = (ny - 0.65) / 0.12
-            whale_dist = math.sqrt(dx * dx + dy * dy)
-            
-            tdx = (nx - (0.45 - 0.22 * 0.7)) / (0.22 * 0.5)
-            tdy = (ny - (0.65 + 0.12 * 0.3)) / (0.12 * 0.4)
-            tail_dist = math.sqrt(tdx * tdx + tdy * tdy)
-            
-            f1dx = (nx - (0.45 + 0.22 * 0.2)) / (0.22 * 0.25)
-            f1dy = (ny - (0.65 + 0.12 * 0.5)) / (0.12 * 0.15)
-            flipper1_dist = math.sqrt(f1dx * f1dx + f1dy * f1dy)
-            
-            f2dx = (nx - (0.45 - 0.22 * 0.1)) / (0.22 * 0.2)
-            f2dy = (ny - (0.65 + 0.12 * 0.6)) / (0.12 * 0.12)
-            flipper2_dist = math.sqrt(f2dx * f2dx + f2dy * f2dy)
-            
-            whale_shape = min(whale_dist, tail_dist, flipper1_dist, flipper2_dist)
-            
-            if whale_shape < 1.0:
-                if whale_shape > 0.85:
-                    t = (whale_shape - 0.85) / 0.15
-                    whale_val = 1.0 - t * t * (3.0 - 2.0 * t)
-                else:
-                    whale_val = 1.0
-                col_r = col_r * (1 - whale_val) + 0.02 * whale_val
-                col_g = col_g * (1 - whale_val) + 0.02 * whale_val
-                col_b = col_b * (1 - whale_val) + 0.03 * whale_val
-                
-                if whale_shape > 0.88:
-                    rim = math.exp(-(whale_shape - 0.92) ** 2 / (2 * 0.02 ** 2)) * 0.6
-                    col_r = min(1.0, col_r + rim * 0.3)
-                    col_g = min(1.0, col_g + rim * 0.8)
-                    col_b = min(1.0, col_b + rim * 1.0)
-                
-                for wx, wy in whale_windows:
-                    wdx = nx - wx
-                    wdy = ny - wy
-                    wdist = math.sqrt(wdx * wdx + wdy * wdy)
-                    if wdist < 0.006:
-                        window_glow = math.exp(-wdist ** 2 / (2 * 0.004 ** 2)) * 0.9
-                        col_r = min(1.0, col_r + window_glow)
-                        col_g = min(1.0, col_g + window_glow * 0.7)
-                        col_b = min(1.0, col_b + window_glow * 0.1)
-            
-            for sx, sy in splash_particles:
-                sdx = nx - sx
-                sdy = ny - sy
-                sd = math.sqrt(sdx * sdx + sdy * sdy)
-                if sd < 0.008:
-                    splash_val = math.exp(-sd ** 2 / (2 * 0.005 ** 2)) * 0.7
-                    col_r = min(1.0, col_r + splash_val * 0.9)
-                    col_g = min(1.0, col_g + splash_val * 0.85)
-                    col_b = min(1.0, col_b + splash_val * 0.8)
-            
-            row[x] = (int(col_r * 255), int(col_g * 255), int(col_b * 255))
-    
-    write_png('entry.png', pixels)
+    print("Writing entry.png...")
+    size = write_png(pixels, 'entry.png')
     
     output_dir = os.environ.get('MAKEFUN_OUTPUT_DIR', '/output')
     os.makedirs(output_dir, exist_ok=True)
-    write_png(os.path.join(output_dir, 'entry.png'), pixels)
+    output_path = os.path.join(output_dir, 'entry.png')
+    print(f"Writing {output_path}...")
+    write_png(pixels, output_path)
     
-    with open('entry.png', 'rb') as f:
-        data = f.read()
-    
-    if len(data) >= 24:
-        ihdr_offset = 16
-        width = struct.unpack('>I', data[ihdr_offset:ihdr_offset + 4])[0]
-        height = struct.unpack('>I', data[ihdr_offset + 4:ihdr_offset + 8])[0]
-        print(f"Size: {len(data)} bytes, Dimensions: {width}x{height}")
-        assert len(data) <= 1048576, f"File too large: {len(data)}"
-        assert width <= 1024 and height <= 1024, f"Dimensions too large: {width}x{height}"
+    valid, msg = validate_png('entry.png')
+    print(msg)
+    if not valid:
+        sys.exit(1)
     
     print("GEN-DONE")
-
-def smoothstep(e0, e1, x):
-    t = max(0.0, min(1.0, (x - e0) / (e1 - e0)))
-    return t * t * (3.0 - 2.0 * t)
 
 if __name__ == '__main__':
     main()
