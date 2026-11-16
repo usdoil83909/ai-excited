@@ -1,286 +1,428 @@
+#!/usr/bin/env python3
+"""
+Procedural PNG image generator (stdlib only). No PIL/numpy/network/input data.
+Scene: night-sky whale leaping from a dark ocean toward a shattered moon, city lights on its back.
+Output: 1024x1024 RGB PNG written to ./entry.png and to $MAKEFUN_OUTPUT_DIR (default /output).
+"""
+from __future__ import annotations
+
 import math
-import struct
-import zlib
 import os
+import struct
 import sys
+import zlib
 
-WIDTH = 1024
-HEIGHT = 1024
 
-def hash2d(x, y):
-    n = int((x * 12.9898 + y * 78.233) * 43758.5453)
-    n = (n ^ (n >> 13)) * 0x5bd1e995
-    n = (n ^ (n >> 15)) * 0x5bd1e995
-    n = n ^ (n >> 13)
-    return (n & 0x7fffffff) / 0x7fffffff
+W, H = 1024, 1024
 
-def hash3d(x, y, z):
-    n = int((x * 12.9898 + y * 78.233 + z * 37.719) * 43758.5453)
-    n = (n ^ (n >> 13)) * 0x5bd1e995
-    n = (n ^ (n >> 15)) * 0x5bd1e995
-    n = n ^ (n >> 13)
-    return (n & 0x7fffffff) / 0x7fffffff
 
-def lerp(a, b, t):
-    return a + (b - a) * t
+def clamp(v: float, lo: float = 0.0, hi: float = 255.0) -> int:
+    if v < lo:
+        return int(lo)
+    if v > hi:
+        return int(hi)
+    return int(v)
 
-def smoothstep(edge0, edge1, x):
-    t = max(0.0, min(1.0, (x - edge0) / (edge1 - edge0)))
-    return t * t * (3.0 - 2.0 * t)
 
-def gaussian(x, sigma):
-    return math.exp(-0.5 * (x / sigma) ** 2)
+def add_rgb(base, dr, dg, db):
+    return (
+        clamp(base[0] + dr),
+        clamp(base[1] + dg),
+        clamp(base[2] + db),
+    )
 
-def dist_point_to_segment(px, py, x1, y1, x2, y2):
-    dx = x2 - x1
-    dy = y2 - y1
-    if dx == 0 and dy == 0:
-        return math.hypot(px - x1, py - y1)
-    t = max(0.0, min(1.0, ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)))
-    proj_x = x1 + t * dx
-    proj_y = y1 + t * dy
-    return math.hypot(px - proj_x, py - proj_y)
 
-def whale_body_df(x, y):
-    cx, cy = 512, 600
-    dx = x - cx
-    dy = y - cy
-    rx = dx * 0.0025
-    ry = dy * 0.0035
-    body = math.sqrt(rx * rx + ry * ry) - 1.0
-    tail_x = dx + 180
-    tail_y = dy + 60
-    rtx = tail_x * 0.004
-    rty = tail_y * 0.006
-    tail = math.sqrt(rtx * rtx + rty * rty) - 1.0
-    flipper1_x = dx + 80
-    flipper1_y = dy - 40
-    f1x = flipper1_x * 0.006
-    f1y = flipper1_y * 0.004
-    flipper1 = math.sqrt(f1x * f1x + f1y * f1y) - 1.0
-    flipper2_x = dx - 80
-    flipper2_y = dy - 30
-    f2x = flipper2_x * 0.006
-    f2y = flipper2_y * 0.004
-    flipper2 = math.sqrt(f2x * f2x + f2y * f2y) - 1.0
-    return min(body, tail, flipper1, flipper2)
+def blend_over(dst, src, a):
+    # src over dst with alpha a in [0,1]
+    return (
+        clamp(dst[0] * (1.0 - a) + src[0] * a),
+        clamp(dst[1] * (1.0 - a) + src[1] * a),
+        clamp(dst[2] * (1.0 - a) + src[2] * a),
+    )
 
-def moon_df(x, y):
-    mx, my = 800, 200
-    return math.hypot(x - mx, y - my) - 280
 
-def crack_df(x, y, cx, cy, angle, length, width):
-    dx = x - cx
-    dy = y - cy
-    rot_x = dx * math.cos(angle) + dy * math.sin(angle)
-    rot_y = -dx * math.sin(angle) + dy * math.cos(angle)
-    if abs(rot_x) > length / 2:
-        return math.hypot(abs(rot_x) - length / 2, rot_y) - width / 2
-    return abs(rot_y) - width / 2
+def gaussian_falloff(d, sigma):
+    if sigma <= 0:
+        return 0.0
+    return math.exp(-(d * d) / (2.0 * sigma * sigma))
 
-def generate_image():
-    pixels = bytearray(WIDTH * HEIGHT * 3)
-    
-    for y in range(HEIGHT):
-        for x in range(WIDTH):
-            ux = x / WIDTH
-            uy = y / HEIGHT
-            
-            sky_t = uy
-            r = int(lerp(10, 25, sky_t))
-            g = int(lerp(5, 15, sky_t))
-            b = int(lerp(20, 50, sky_t))
-            
-            star_hash = hash2d(x * 0.1, y * 0.1)
-            if star_hash < 0.0003:
-                brightness = star_hash * 3000 + 100
-                r = min(255, r + int(brightness))
-                g = min(255, g + int(brightness * 0.9))
-                b = min(255, b + int(brightness * 0.7))
-            elif star_hash < 0.00035:
-                brightness = (star_hash - 0.0003) * 20000 + 50
-                r = min(255, r + int(brightness))
-                g = min(255, g + int(brightness * 0.95))
-                b = min(255, b + int(brightness * 0.8))
-            
-            moon_d = moon_df(x, y)
-            if moon_d < 0:
-                glow = gaussian(moon_d + 280, 60) * 0.6
-                if moon_d < 10:
-                    mr = int(lerp(220, 180, -moon_d / 10))
-                    mg = int(lerp(210, 170, -moon_d / 10))
-                    mb = int(lerp(180, 140, -moon_d / 10))
-                else:
-                    mr = int(200 + glow * 55)
-                    mg = int(190 + glow * 65)
-                    mb = int(160 + glow * 95)
-                r = int(r * (1 - glow) + mr * glow)
-                g = int(g * (1 - glow) + mg * glow)
-                b = int(b * (1 - glow) + mb * glow)
-                
-                crack1 = crack_df(x, y, 800, 200, 0.5, 200, 3)
-                crack2 = crack_df(x, y, 750, 250, -0.3, 150, 2.5)
-                crack3 = crack_df(x, y, 850, 180, 1.2, 180, 2)
-                crack4 = crack_df(x, y, 780, 150, -1.0, 120, 2)
-                min_crack = min(crack1, crack2, crack3, crack4)
-                if min_crack < 0:
-                    crack_amt = gaussian(min_crack, 2)
-                    r = int(r * (1 - crack_amt * 0.8))
-                    g = int(g * (1 - crack_amt * 0.8))
-                    b = int(b * (1 - crack_amt * 0.8))
-                
-                for i in range(8):
-                    shard_hash = hash3d(x * 0.02 + i * 100, y * 0.02 + i * 50, i)
-                    sx = 800 + (shard_hash - 0.5) * 600
-                    sy = 200 + (hash3d(x * 0.02 + i * 100 + 1, y * 0.02 + i * 50 + 1, i) - 0.5) * 400
-                    sd = math.hypot(x - sx, y - sy)
-                    if sd < 8:
-                        sg = gaussian(sd, 3) * 0.4
-                        r = min(255, int(r + 100 * sg))
-                        g = min(255, int(g + 90 * sg))
-                        b = min(255, int(b + 70 * sg))
-            
-            if y > HEIGHT - 220:
-                ocean_t = (y - (HEIGHT - 220)) / 220
-                r = int(lerp(r, 5, ocean_t))
-                g = int(lerp(g, 8, ocean_t))
-                b = int(lerp(b, 20, ocean_t))
-                
-                shimmer = math.sin(x * 0.05 + y * 0.02) * 0.5 + math.sin(x * 0.1) * 0.3
-                shimmer_val = int(max(0, shimmer * 15 * (1 - ocean_t)))
-                r = min(255, r + shimmer_val)
-                g = min(255, g + shimmer_val)
-                b = min(255, b + shimmer_val * 2)
-                
-                refl_x = 800
-                refl_dist = abs(x - refl_x)
-                if refl_dist < 80:
-                    refl_str = gaussian(refl_dist, 25) * (1 - ocean_t) * 0.5
-                    r = min(255, int(r + 100 * refl_str))
-                    g = min(255, int(g + 90 * refl_str))
-                    b = min(255, int(b + 60 * refl_str))
-            
-            whale_d = whale_body_df(x, y)
-            if whale_d < 0:
-                whale_d_abs = -whale_d
-                if whale_d_abs < 8:
-                    rim = gaussian(whale_d_abs, 4) * 0.9
-                    r = min(255, int(r + 80 * rim))
-                    g = min(255, int(g + 180 * rim))
-                    b = min(255, int(b + 220 * rim))
-                else:
-                    r = int(r * 0.05)
-                    g = int(g * 0.05)
-                    b = int(b * 0.1)
-                
-                back_y = 600 + (x - 512) * 0.3
-                back_dist = abs(y - back_y)
-                if back_dist < 35 and x > 400 and x < 620:
-                    segment = int((x - 400) / 12)
-                    window_hash = hash2d(segment * 100, back_y * 0.5)
-                    if window_hash < 0.15:
-                        wx = 400 + (segment % 18) * 12
-                        wy = back_y + (segment // 18) * 8
-                        wd = math.hypot(x - wx, y - wy)
-                        if wd < 4:
-                            wg = gaussian(wd, 1.5)
-                            r = min(255, int(r + 255 * wg))
-                            g = min(255, int(g + 200 * wg))
-                            b = min(255, int(b + 50 * wg))
-            
-            if y > HEIGHT - 220 and whale_body_df(x, y) < 50 and whale_body_df(x, y) > -20:
-                splash_d = whale_body_df(x, y)
-                if splash_d > 0 and splash_d < 30:
-                    splash_amt = gaussian(splash_d - 10, 8) * 0.7
-                    r = min(255, int(r + 200 * splash_amt))
-                    g = min(255, int(g + 210 * splash_amt))
-                    b = min(255, int(b + 230 * splash_amt))
-            
-            idx = (y * WIDTH + x) * 3
-            pixels[idx] = max(0, min(255, r))
-            pixels[idx + 1] = max(0, min(255, g))
-            pixels[idx + 2] = max(0, min(255, b))
-    
-    return pixels
 
-def write_png(pixels, filename):
-    scanlines = bytearray()
-    for y in range(HEIGHT):
-        scanlines.append(0)
-        start = y * WIDTH * 3
-        end = start + WIDTH * 3
-        scanlines.extend(pixels[start:end])
-    
-    compressed = zlib.compress(scanlines, 1)
-    
-    def make_chunk(chunk_type, data):
-        crc = zlib.crc32(chunk_type + data) & 0xffffffff
-        return struct.pack('>I', len(data)) + chunk_type + data + struct.pack('>I', crc)
-    
-    png = bytearray()
-    png.extend(b'\x89PNG\r\n\x1a\n')
-    
-    ihdr_data = struct.pack('>IIBBBBB', WIDTH, HEIGHT, 8, 2, 0, 0, 0)
-    png.extend(make_chunk(b'IHDR', ihdr_data))
-    
-    png.extend(make_chunk(b'IDAT', compressed))
-    
-    png.extend(make_chunk(b'IEND', b''))
-    
-    with open(filename, 'wb') as f:
-        f.write(png)
-    
-    return len(png)
+def hash01(x: int, y: int, seed: int = 1337) -> float:
+    n = x * 374761393 + y * 668265263 + seed * 1442695041
+    n = (n ^ (n >> 13)) * 1274126177
+    n = n ^ (n >> 16)
+    return (n & 0xFFFFFFFF) / 4294967295.0
 
-def validate_png(filename):
-    with open(filename, 'rb') as f:
+
+def hash_signed(x: int, y: int, seed: int = 1337) -> float:
+    return hash01(x, y, seed) * 2.0 - 1.0
+
+
+def sky_color(y: int):
+    t = y / float(H - 1)
+    # deep navy near top -> indigo near horizon
+    top = (4, 6, 28)
+    mid = (10, 14, 55)
+    horizon = (30, 22, 70)
+    if t < 0.65:
+        tt = t / 0.65
+        # top->mid
+        return (
+            top[0] + (mid[0] - top[0]) * tt,
+            top[1] + (mid[1] - top[1]) * tt,
+            top[2] + (mid[2] - top[2]) * tt,
+        )
+    else:
+        tt = (t - 0.65) / 0.35
+        return (
+            mid[0] + (horizon[0] - mid[0]) * tt,
+            mid[1] + (horizon[1] - mid[1]) * tt,
+            mid[2] + (horizon[2] - mid[2]) * tt,
+        )
+
+
+def point_in_polygon(px, py, poly):
+    inside = False
+    n = len(poly)
+    j = n - 1
+    for i in range(n):
+        xi, yi = poly[i]
+        xj, yj = poly[j]
+        if ((yi > py) != (yj > py)) and (px < (xj - xi) * (py - yi) / ((yj - yi) if (yj - yi) != 0 else 1e-12) + xi):
+            inside = not inside
+        j = i
+    return inside
+
+
+def build_scene():
+    img = [[(0, 0, 0) for _ in range(W)] for _ in range(H)]
+
+    # 1) Sky gradient + stars
+    for y in range(H):
+        sc = sky_color(y)
+        for x in range(W):
+            img[y][x] = (clamp(sc[0]), clamp(sc[1]), clamp(sc[2]))
+
+    # Deterministic stars via sin-based hash
+    stars = []
+    # generate ~300 stars
+    for i in range(420):
+        h = math.sin(i * 127.1 + 311.7) * 43758.5453
+        h2 = math.sin(i * 269.5 + 183.3) * 43758.5453
+        sx = int((h - math.floor(h)) * (W - 1))
+        sy = int((h2 - math.floor(h2)) * (H * 0.62))  # mostly sky upper part
+        sz = ((math.sin(i * 74.7) * 0.5 + 0.5))
+        stars.append((sx, sy, sz))
+
+    # dedupe roughly by placing
+    placed = set()
+    star_list = []
+    for sx, sy, sz in stars:
+        key = (sx // 2, sy // 2)
+        if key in placed:
+            continue
+        placed.add(key)
+        star_list.append((sx, sy, sz))
+        if len(star_list) >= 320:
+            break
+
+    for sx, sy, sz in star_list:
+        brightness = 140 + sz * 115
+        # size category
+        if sz > 0.92:
+            # larger glowing star
+            for oy in range(-2, 3):
+                for ox in range(-2, 3):
+                    px = sx + ox
+                    py = sy + oy
+                    if 0 <= px < W and 0 <= py < H:
+                        d = math.sqrt(ox * ox + oy * oy)
+                        a = gaussian_falloff(d, 1.4)
+                        img[py][px] = add_rgb(img[py][px], brightness * a, brightness * a, brightness * a * 1.1)
+        elif sz > 0.75:
+            for oy in range(-1, 2):
+                for ox in range(-1, 2):
+                    px = sx + ox
+                    py = sy + oy
+                    if 0 <= px < W and 0 <= py < H:
+                        d = math.sqrt(ox * ox + oy * oy)
+                        a = gaussian_falloff(d, 0.9)
+                        img[py][px] = add_rgb(img[py][px], brightness * a * 0.9, brightness * a * 0.9, brightness * a)
+        else:
+            if 0 <= sx < W and 0 <= sy < H:
+                img[sy][sx] = add_rgb(img[sy][sx], brightness * 0.7, brightness * 0.7, brightness * 0.85)
+
+    # 2) Moon: big pale circle upper-right with soft glow; dark crack polygons; faint debris shards
+    moon_cx, moon_cy = int(W * 0.78), int(H * 0.22)
+    moon_r = int(min(W, H) * 0.18)
+
+    # glow layers
+    for gy in range(max(0, moon_cy - moon_r - 80), min(H, moon_cy + moon_r + 80)):
+        for gx in range(max(0, moon_cx - moon_r - 80), min(W, moon_cx + moon_r + 80)):
+            dx = gx - moon_cx
+            dy = gy - moon_cy
+            d = math.sqrt(dx * dx + dy * dy)
+            if d < moon_r + 70:
+                glow = gaussian_falloff(d - moon_r * 0.6, 55.0) * 0.35
+                if glow > 0.001:
+                    img[gy][gx] = add_rgb(img[gy][gx], 120 * glow, 120 * glow, 90 * glow)
+
+    # moon body
+    for y in range(max(0, moon_cy - moon_r - 2), min(H, moon_cy + moon_r + 2)):
+        for x in range(max(0, moon_cx - moon_r - 2), min(W, moon_cx + moon_r + 2)):
+            dx = x - moon_cx
+            dy = y - moon_cy
+            d = math.sqrt(dx * dx + dy * dy)
+            if d <= moon_r:
+                # pale color with slight shading
+                shade = 1.0 - (d / moon_r) * 0.12
+                val = 220 * shade
+                img[y][x] = (clamp(val), clamp(val * 0.98), clamp(val * 0.9))
+            elif d <= moon_r + 1.5:
+                a = 1.0 - (d - moon_r) / 1.5
+                img[y][x] = blend_over(img[y][x], (230, 228, 210), a * 0.8)
+
+    # cracks (dark polygons)
+    cracks = [
+        [(moon_cx - 10, moon_cy - 30), (moon_cx + 15, moon_cy - 5), (moon_cx + 5, moon_cy + 10), (moon_cx - 20, moon_cy - 10)],
+        [(moon_cx + 20, moon_cy - 10), (moon_cx + 60, moon_cy + 5), (moon_cx + 45, moon_cy + 25), (moon_cx + 10, moon_cy + 5)],
+        [(moon_cx - 30, moon_cy + 20), (moon_cx - 5, moon_cy + 40), (moon_cx - 15, moon_cy + 65), (moon_cx - 45, moon_cy + 35)],
+    ]
+    for poly in cracks:
+        minx = max(0, min(p[0] for p in poly) - 2)
+        maxx = min(W - 1, max(p[0] for p in poly) + 2)
+        miny = max(0, min(p[1] for p in poly) - 2)
+        maxy = min(H - 1, max(p[1] for p in poly) + 2)
+        for yy in range(miny, maxy + 1):
+            for xx in range(minx, maxx + 1):
+                if point_in_polygon(xx + 0.5, yy + 0.5, poly):
+                    dxm = xx - moon_cx
+                    dym = yy - moon_cy
+                    if math.sqrt(dxm * dxm + dym * dym) <= moon_r:
+                        img[yy][xx] = blend_over(img[yy][xx], (90, 88, 78), 0.75)
+
+    # faint debris shards
+    shards = [
+        [(moon_cx + moon_r + 15, moon_cy - 20), (moon_cx + moon_r + 35, moon_cy - 10), (moon_cx + moon_r + 20, moon_cy + 5)],
+        [(moon_cx + moon_r + 5, moon_cy + 30), (moon_cx + moon_r + 25, moon_cy + 40), (moon_cx + moon_r + 10, moon_cy + 55)],
+        [(moon_cx - moon_r - 10, moon_cy - 5), (moon_cx - moon_r - 30, moon_cy + 5), (moon_cx - moon_r - 15, moon_cy + 20)],
+    ]
+    for poly in shards:
+        minx = max(0, min(p[0] for p in poly) - 1)
+        maxx = min(W - 1, max(p[0] for p in poly) + 1)
+        miny = max(0, min(p[1] for p in poly) - 1)
+        maxy = min(H - 1, max(p[1] for p in poly) + 1)
+        for yy in range(miny, maxy + 1):
+            for xx in range(minx, maxx + 1):
+                if point_in_polygon(xx + 0.5, yy + 0.5, poly):
+                    img[yy][xx] = blend_over(img[yy][xx], (200, 198, 180), 0.55)
+
+    # 3) Ocean bottom ~200px
+    ocean_top = H - 200
+    for y in range(ocean_top, H):
+        ty = (y - ocean_top) / 199.0
+        base = (
+            6 + ty * 4,
+            10 + ty * 8,
+            30 + ty * 25,
+        )
+        for x in range(W):
+            shimmer = 0.0
+            shimmer += math.sin(x * 0.03 + y * 0.15) * 4.0
+            shimmer += math.sin(x * 0.07 - y * 0.08 + 1.7) * 3.0
+            val = (
+                clamp(base[0] + shimmer * 0.3),
+                clamp(base[1] + shimmer * 0.5),
+                clamp(base[2] + shimmer * 0.8),
+            )
+            img[y][x] = val
+
+    # Moon reflection column on ocean
+    ref_x = moon_cx
+    for y in range(ocean_top, H):
+        for x in range(W):
+            dx = x - ref_x
+            width = 18 + (y - ocean_top) * 0.35
+            a = gaussian_falloff(dx, width) * 0.35
+            if a > 0.002:
+                img[y][x] = add_rgb(img[y][x], 80 * a, 78 * a, 60 * a)
+
+    # 4) Whale: large dark silhouette leaping upward-left
+    # Body as distance field (ellipse-ish) + curved tail + flippers
+    whale_cx = W * 0.52
+    whale_cy = H * 0.56
+    for y in range(H):
+        for x in range(W):
+            # body: elongated ellipse rotated-ish by moving coords
+            dx = (x - whale_cx)
+            dy = (y - whale_cy)
+            # rotate slightly
+            ang = -0.35
+            rx = dx * math.cos(ang) - dy * math.sin(ang)
+            ry = dx * math.sin(ang) + dy * math.cos(ang)
+            body = (rx / 260.0) ** 2 + (ry / 110.0) ** 2
+            inside_body = body <= 1.0
+
+            # tail (down-right curved)
+            tx = x - (whale_cx + 200)
+            ty = y - (whale_cy + 30)
+            tail = (tx / 140.0) ** 2 + ((ty - 40 * math.sin(tx / 80.0)) / 50.0) ** 2
+            inside_tail = tail <= 1.0 and x > whale_cx + 120
+
+            # flipper
+            fx = x - (whale_cx - 40)
+            fy = y - (whale_cy + 40)
+            flipper = (fx / 90.0) ** 2 + (fy / 35.0) ** 2
+            inside_flipper = flipper <= 1.0 and y > whale_cy
+
+            if inside_body or inside_tail or inside_flipper:
+                # dark silhouette
+                img[y][x] = (8, 10, 22)
+
+    # Pale-cyan rim light on top edge of whale
+    for y in range(H):
+        for x in range(W):
+            dx = (x - whale_cx)
+            dy = (y - whale_cy)
+            ang = -0.35
+            rx = dx * math.cos(ang) - dy * math.sin(ang)
+            ry = dx * math.sin(ang) + dy * math.cos(ang)
+            body = (rx / 260.0) ** 2 + (ry / 110.0) ** 2
+            # rim: just outside top side
+            if 0.98 <= body <= 1.08 and ry < 0:
+                a = (1.08 - body) / 0.10
+                img[y][x] = blend_over(img[y][x], (140, 220, 230), a * 0.9)
+
+    # 5) City lights on whale back (warm yellow in grid clusters following curve)
+    for i in range(120):
+        h = math.sin(i * 91.7 + 17.3) * 43758.5453
+        h2 = math.sin(i * 233.1 + 51.7) * 43758.5453
+        lx = int(whale_cx - 180 + (h - math.floor(h)) * 360)
+        ly = int(whale_cy - 90 + (h2 - math.floor(h2)) * 120)
+        dx = (lx - whale_cx)
+        dy = (ly - whale_cy)
+        ang = -0.35
+        rx = dx * math.cos(ang) - dy * math.sin(ang)
+        ry = dx * math.sin(ang) + dy * math.cos(ang)
+        body = (rx / 260.0) ** 2 + (ry / 110.0) ** 2
+        if body <= 0.85 and ry < 10:
+            # draw small lit block
+            for oy in range(0, 3):
+                for ox in range(0, 2):
+                    px = lx + ox
+                    py = ly + oy
+                    if 0 <= px < W and 0 <= py < H:
+                        img[py][px] = blend_over(img[py][px], (255, 210, 120), 0.95)
+            # tiny glow
+            for oy in range(-1, 4):
+                for ox in range(-1, 3):
+                    px = lx + ox
+                    py = ly + oy
+                    if 0 <= px < W and 0 <= py < H:
+                        d = math.sqrt((ox - 0.5) ** 2 + (oy - 1.0) ** 2)
+                        a = gaussian_falloff(d, 1.8) * 0.25
+                        img[py][px] = add_rgb(img[py][px], 255 * a, 210 * a, 120 * a)
+
+    # 6) Splash/foam where whale left water
+    splash_cx = int(whale_cx - 220)
+    splash_cy = ocean_top + 10
+    for i in range(90):
+        h = math.sin(i * 55.3 + 9.1) * 43758.5453
+        h2 = math.sin(i * 141.7 + 33.3) * 43758.5453
+        px = int(splash_cx + (h - math.floor(h)) * 220 - 110)
+        py = int(splash_cy + (h2 - math.floor(h2)) * 60 - 20)
+        if 0 <= px < W and 0 <= py < H:
+            r = 1 + int((math.sin(i * 12.3) * 0.5 + 0.5) * 2)
+            for oy in range(-r, r + 1):
+                for ox in range(-r, r + 1):
+                    qx = px + ox
+                    qy = py + oy
+                    if 0 <= qx < W and 0 <= qy < H:
+                        d = math.sqrt(ox * ox + oy * oy)
+                        a = gaussian_falloff(d, r + 0.5) * 0.8
+                        img[qy][qx] = blend_over(img[qy][qx], (210, 230, 240), a)
+
+    return img
+
+
+def png_chunk(chunk_type: bytes, data: bytes) -> bytes:
+    c = chunk_type + data
+    return struct.pack(">I", len(data)) + c + struct.pack(">I", zlib.crc32(c) & 0xFFFFFFFF)
+
+
+def write_png(path: str, img):
+    # Build raw scanlines with filter type 0
+    raw = bytearray()
+    for y in range(H):
+        raw.append(0)  # filter type None
+        for x in range(W):
+            r, g, b = img[y][x]
+            raw.extend((r & 0xFF, g & 0xFF, b & 0xFF))
+
+    compressed = zlib.compress(bytes(raw), level=6)
+
+    sig = b"\x89PNG\r\n\x1a\n"
+    ihdr = struct.pack(">IIBBBBB", W, H, 8, 2, 0, 0, 0)  # 8-bit RGB
+    out = bytearray()
+    out.extend(sig)
+    out.extend(png_chunk(b"IHDR", ihdr))
+    out.extend(png_chunk(b"IDAT", compressed))
+    out.extend(png_chunk(b"IEND", b""))
+
+    with open(path, "wb") as f:
+        f.write(out)
+
+    return len(out)
+
+
+def validate_png(path: str):
+    with open(path, "rb") as f:
         data = f.read()
-    
-    if len(data) < 29:
-        return False, "File too small"
-    
-    if data[:8] != b'\x89PNG\r\n\x1a\n':
-        return False, "Invalid PNG signature"
-    
-    ihdr_len = struct.unpack('>I', data[8:12])[0]
-    if data[12:16] != b'IHDR' or ihdr_len != 13:
-        return False, "Invalid IHDR chunk"
-    
-    width, height = struct.unpack('>II', data[16:24])
-    bit_depth = data[24]
-    color_type = data[25]
-    
-    if width != 1024 or height != 1024:
-        return False, f"Invalid dimensions: {width}x{height}"
-    if bit_depth != 8:
-        return False, f"Invalid bit depth: {bit_depth}"
-    if color_type != 2:
-        return False, f"Invalid color type: {color_type}"
-    
-    if len(data) > 1048576:
-        return False, f"File too large: {len(data)} bytes"
-    
-    return True, f"Valid PNG: {width}x{height}, {len(data)} bytes"
+    if len(data) < 24:
+        raise ValueError("PNG too small")
+    # IHDR at offset 8: length(4)+type(4)=8, then data starts at 16 for width/height
+    width = struct.unpack(">I", data[16:20])[0]
+    height = struct.unpack(">I", data[20:24])[0]
+    size = len(data)
+    return width, height, size
+
 
 def main():
-    print("Generating image...")
-    pixels = generate_image()
-    
-    print("Writing entry.png...")
-    size = write_png(pixels, 'entry.png')
-    
-    output_dir = os.environ.get('MAKEFUN_OUTPUT_DIR', '/output')
-    os.makedirs(output_dir, exist_ok=True)
-    output_path = os.path.join(output_dir, 'entry.png')
-    print(f"Writing {output_path}...")
-    write_png(pixels, output_path)
-    
-    valid, msg = validate_png('entry.png')
-    print(msg)
-    if not valid:
-        sys.exit(1)
-    
+    img = build_scene()
+    out_path = os.path.join(os.getcwd(), "entry.png")
+    size_bytes = write_png(out_path, img)
+
+    # Also write to output dir
+    out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+        out_copy = os.path.join(out_dir, "entry.png")
+        with open(out_path, "rb") as src, open(out_copy, "wb") as dst:
+            dst.write(src.read())
+        wrote_copy = True
+    except Exception as e:
+        wrote_copy = False
+        copy_err = str(e)
+
+    w, h, fsize = validate_png(out_path)
+    if w > 1024 or h > 1024:
+        print(f"VALIDATION FAIL: dimensions {w}x{h} exceed 1024x1024")
+        sys.exit(2)
+    if fsize > 1048576:
+        print(f"VALIDATION FAIL: file size {fsize} bytes > 1048576")
+        sys.exit(3)
+
+    print("=== PNG Summary ===")
+    print(f"File: {out_path}")
+    print(f"Width: {w}")
+    print(f"Height: {h}")
+    print(f"Size(bytes): {fsize}")
+    if wrote_copy:
+        print(f"Copied to: {os.path.join(out_dir, 'entry.png')}")
+    else:
+        print(f"Copy to {out_dir} failed: {copy_err}")
     print("GEN-DONE")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

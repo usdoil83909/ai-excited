@@ -4,4 +4,15 @@
 
 # Night Whale
 
-A procedurally generated night-sky whale leaps from a dark ocean toward a shattered moon, its back illuminated by twinkling city lights. The 1024x1024 PNG is built with a pure-stdlib zlib PNG writer—no external dependencies. The output is fully deterministic, producing identical bytes on every run. Run with `python3 main.py`. Bounty: https://make.fun/bounty/ai-excited-01
+A procedurally generated night-sky scene of a whale leaping from a dark ocean toward a shattered moon.
+Tiny city lights glow across the whale's back against a star-filled sky.
+Rendered as a 1024x1024 PNG using a pure-stdlib zlib PNG writer.
+Fully deterministic: produces the same bytes on every run.
+
+## Usage
+
+```bash
+python3 main.py
+```
+
+Bounty: https://make.fun/bounty/ai-excited-01
